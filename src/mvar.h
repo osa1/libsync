@@ -4,7 +4,7 @@
 typedef struct mvar_ mvar;
 
 mvar* mvar_new();
-void mvar_free();
+void mvar_free(mvar*);
 void mvar_put(mvar*, void*);
 void* mvar_take(mvar*);
 
