@@ -29,6 +29,14 @@ void* mvar_reader_thr(void* arg0)
     return mvar_take(arg);
 }
 
+void* mvar_reader_thr_p(void* arg0)
+{
+    writer_arg* arg = (writer_arg*)arg0;
+    (void)mvar_take(arg->m);
+    printf("reader %lu returning\n", arg->i);
+    return NULL;
+}
+
 void* chan_writer_thr(void* arg0)
 {
     writer_arg* arg = (writer_arg*)arg0;
@@ -49,12 +57,40 @@ static int N = 10000;
 // different order of thread creation: spawn readers first, spawn writers
 // first, spawn in mixed order.
 
-typedef void*(*mk_chan)();
-typedef void*(*reader_thr)(void*);
-typedef void*(*writer_thr)(void*);
-typedef void(*free_chan)(void*);
+typedef void*   (*mk_chan)     ();
+typedef void*   (*reader_thr)  (void*);
+typedef void*   (*writer_thr)  (void*);
+typedef void    (*free_chan)   (void*);
 
-void mvar_test_writers_first(mk_chan mk_chan, free_chan free_chan, reader_thr reader_thr, writer_thr writer_thr)
+void create_thread(pthread_t* thr, void*(thr_fn)(void*), void* arg)
+{
+    int pt_ret = pthread_create(thr, 0, thr_fn, arg);
+    if (pt_ret != 0)
+    {
+        printf("Error while creating writer thread: %s\n", strerror(pt_ret));
+        exit(1);
+    }
+}
+
+void** wait_threads(pthread_t* thrs, int n, bool collect_rets)
+{
+    void** rets = collect_rets ? malloc(sizeof(void*) * n) : NULL;
+
+    for (int i = 0; i < n; ++i)
+    {
+        int pt_ret = pthread_join(*(thrs + i), collect_rets ? rets + i : NULL);
+        if (pt_ret != 0)
+        {
+            printf("pthread_join() failed: %s\n", strerror(pt_ret)); // probably EDEADLK
+            exit(1);
+        }
+    }
+
+    return rets;
+}
+
+void mvar_test_writers_first(mk_chan mk_chan, free_chan free_chan, reader_thr reader_thr, writer_thr writer_thr,
+                             bool wait_writers /* wait for writers to return first */)
 {
     pthread_t* writers = malloc(sizeof(pthread_t) * N);
     pthread_t* readers = malloc(sizeof(pthread_t) * N);
@@ -72,49 +108,23 @@ void mvar_test_writers_first(mk_chan mk_chan, free_chan free_chan, reader_thr re
     memset(return_vals, 0, sizeof(bool) * N);
 
     for (int i = 0; i < N; ++i)
-    {
-        int pt_ret = pthread_create(writers + i, 0, writer_thr, args + i);
-        if (pt_ret != 0)
-        {
-            printf("Error while creating writer thread: %s\n", strerror(pt_ret));
-            exit(1);
-        }
-    }
+        create_thread(writers + i, writer_thr, args + i);
+
+    if (wait_writers)
+        (void)wait_threads(writers, N, false);
 
     for (int i = 0; i < N; ++i)
+        create_thread(readers + i, reader_thr, m);
+
     {
-        int pt_ret = pthread_create(readers + i, 0, reader_thr, m);
-        if (pt_ret != 0)
-        {
-            printf("Error while creating reader thread: %s\n", strerror(pt_ret));
-            exit(1);
-        }
+        void** rets = wait_threads(readers, N, true);
+        for (int i = 0; i < N; ++i)
+            return_vals[(ptrdiff_t)rets[i]] = true;
+        free(rets);
     }
 
-    for (int i = 0; i < N; ++i)
-    {
-        void* ret;
-        int pt_ret = pthread_join(readers[i], &ret);
-        if (pt_ret != 0)
-        {
-            assert(pt_ret = EDEADLK);
-            printf("Deadlock!\n");
-            exit(1);
-        }
-        // printf("read: %p\n", ret);
-        return_vals[(ptrdiff_t)ret] = true;
-    }
-
-    for (int i = 0; i < N; ++i)
-    {
-        int pt_ret = pthread_join(writers[i], NULL);
-        if (pt_ret != 0)
-        {
-            assert(pt_ret = EDEADLK);
-            printf("Deadlock!\n");
-            exit(1);
-        }
-    }
+    if (!wait_writers)
+        (void)wait_threads(writers, N, false);
 
     for (int i = 0; i < N; ++i)
         assert(return_vals[i]);
@@ -144,49 +154,19 @@ void mvar_test_readers_first(mk_chan mk_chan, free_chan free_chan, reader_thr re
     memset(return_vals, 0, sizeof(bool) * N);
 
     for (int i = 0; i < N; ++i)
-    {
-        int pt_ret = pthread_create(readers + i, 0, reader_thr, m);
-        if (pt_ret != 0)
-        {
-            printf("Error while creating reader thread: %s\n", strerror(pt_ret));
-            exit(1);
-        }
-    }
+        create_thread(readers + i, reader_thr, m);
 
     for (int i = 0; i < N; ++i)
+        create_thread(writers + i, writer_thr, args + i);
+
     {
-        int pt_ret = pthread_create(writers + i, 0, writer_thr, args + i);
-        if (pt_ret != 0)
-        {
-            printf("Error while creating writer thread: %s\n", strerror(pt_ret));
-            exit(1);
-        }
+        void** rets = wait_threads(readers, N, true);
+        for (int i = 0; i < N; ++i)
+            return_vals[(ptrdiff_t)rets[i]] = true;
+        free(rets);
     }
 
-    for (int i = 0; i < N; ++i)
-    {
-        void* ret;
-        int pt_ret = pthread_join(readers[i], &ret);
-        if (pt_ret != 0)
-        {
-            assert(pt_ret = EDEADLK);
-            printf("Deadlock!\n");
-            exit(1);
-        }
-        // printf("read: %p\n", ret);
-        return_vals[(ptrdiff_t)ret] = true;
-    }
-
-    for (int i = 0; i < N; ++i)
-    {
-        int pt_ret = pthread_join(writers[i], NULL);
-        if (pt_ret != 0)
-        {
-            assert(pt_ret = EDEADLK);
-            printf("Deadlock!\n");
-            exit(1);
-        }
-    }
+    (void)wait_threads(writers, N, false);
 
     for (int i = 0; i < N; ++i)
         assert(return_vals[i]);
@@ -218,53 +198,22 @@ void mvar_test_mixed_order(mk_chan mk_chan, free_chan free_chan, reader_thr read
     int writer_idx = 0;
     int reader_idx = 0;
     for (int i = 0; i < N * 2; ++i)
-    {
         if (i % 2)
-        {
-            int pt_ret = pthread_create(readers + reader_idx++, 0, reader_thr, m);
-            if (pt_ret != 0)
-            {
-                printf("Error while creating reader thread: %s\n", strerror(pt_ret));
-                exit(1);
-            }
-        }
+            create_thread(readers + reader_idx++, reader_thr, m);
         else
         {
-            int pt_ret = pthread_create(writers + writer_idx, 0, writer_thr, args + writer_idx);
+            create_thread(writers + writer_idx, writer_thr, args + writer_idx);
             ++writer_idx;
-            if (pt_ret != 0)
-            {
-                printf("Error while creating writer thread: %s\n", strerror(pt_ret));
-                exit(1);
-            }
         }
-    }
 
-    for (int i = 0; i < N; ++i)
     {
-        void* ret;
-        int pt_ret = pthread_join(readers[i], &ret);
-        if (pt_ret != 0)
-        {
-            assert(pt_ret = EDEADLK);
-            printf("Deadlock!\n");
-            exit(1);
-        }
-        // printf("read: %p\n", ret);
-        return_vals[(ptrdiff_t)ret] = true;
+        void** rets = wait_threads(readers, N, true);
+        for (int i = 0; i < N; ++i)
+            return_vals[(ptrdiff_t)rets[i]] = true;
+        free(rets);
     }
 
-    for (int i = 0; i < N; ++i)
-    {
-        int pt_ret = pthread_join(writers[i], NULL);
-        if (pt_ret != 0)
-        {
-            assert(pt_ret = EDEADLK);
-            printf("Deadlock!\n");
-            exit(1);
-        }
-    }
-
+    (void)wait_threads(writers, N, false);
 
     for (int i = 0; i < N; ++i)
         assert(return_vals[i]);
@@ -290,14 +239,36 @@ int main(int argc, char** argv)
     // TODO: Test FIFO property
 
     printf("Testing mvars...\n");
-    mvar_test_writers_first((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr);
+    mvar_test_writers_first((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr, false);
     mvar_test_readers_first((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr);
     mvar_test_mixed_order((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr);
 
     printf("Testing channels...\n");
-    mvar_test_writers_first((mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr);
+    mvar_test_writers_first(
+            (mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr, true);
     mvar_test_readers_first((mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr);
     mvar_test_mixed_order((mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr);
+
+    printf("Testing mvar FIFO property...\n");
+    {
+        mvar* m = mvar_new();
+        pthread_t threads[10];
+        writer_arg args[10];
+        for (int i = 0; i < 10; ++i)
+        {
+            args[i].i = i;
+            args[i].m = m;
+            create_thread(threads + i, mvar_reader_thr_p, args + i);
+            usleep(100000); // FIXME: any better ways to make sure all reader
+                            // threads are queued up?
+        }
+
+        for (int i = 0; i < 10; ++i)
+            mvar_put(m, NULL);
+
+        wait_threads(threads, 10, false);
+        mvar_free(m);
+    }
 
     return 0;
 }
