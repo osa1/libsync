@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "src/mvar.h"
+#include "src/chan_mvar.h"
 
 typedef struct
 {
@@ -274,5 +275,20 @@ int main(int argc, char** argv)
     mvar_test_readers_first();
     mvar_test_mixed_order();
 
+    chan_mvar* chan = chan_mvar_new();
+    chan_write(chan, (void*)(ptrdiff_t)123);
+    chan_write(chan, (void*)(ptrdiff_t)456);
+    chan_write(chan, (void*)(ptrdiff_t)789);
+
+    void* ret = chan_read(chan);
+    printf("%d\n", (int)(ptrdiff_t)ret);
+
+    ret = chan_read(chan);
+    printf("%d\n", (int)(ptrdiff_t)ret);
+
+    ret = chan_read(chan);
+    printf("%d\n", (int)(ptrdiff_t)ret);
+
+    chan_mvar_free(chan);
     return 0;
 }
