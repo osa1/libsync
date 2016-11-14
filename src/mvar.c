@@ -180,7 +180,7 @@ void mvar_put(mvar* mvar, void* value)
     // signal a reader
     if (!list_is_empty(mvar->read_list))
     {
-        printf("signaling a reader\n");
+        // printf("signaling a reader\n");
         sem_post(mvar->read_list->head->sem);
     }
 
@@ -213,12 +213,11 @@ void* mvar_take(mvar* mvar)
     // signal a writer
     if (!list_is_empty(mvar->write_list))
     {
-        printf("signaling a writer\n");
+        // printf("signaling a writer\n");
         sem_post(mvar->write_list->head->sem);
     }
 
     void* value = mvar->value;
     pthread_mutex_unlock(&mvar->lock);
-    printf("take returning\n");
     return value;
 }
