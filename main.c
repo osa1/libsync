@@ -13,20 +13,33 @@
 typedef struct
 {
     ptrdiff_t   i;
-    mvar*       m;
+    void*       m;
 } writer_arg;
 
-void* writer_thr(void* arg0)
+void* mvar_writer_thr(void* arg0)
 {
     writer_arg* arg = (writer_arg*)arg0;
-    mvar_put(arg->m, (void*)arg->i);
+    mvar_put((mvar*)arg->m, (void*)arg->i);
     return NULL;
 }
 
-void* reader_thr(void* arg0)
+void* mvar_reader_thr(void* arg0)
 {
     mvar* arg = (mvar*)arg0;
     return mvar_take(arg);
+}
+
+void* chan_writer_thr(void* arg0)
+{
+    writer_arg* arg = (writer_arg*)arg0;
+    chan_write((chan_mvar*)arg->m, (void*)arg->i);
+    return NULL;
+}
+
+void* chan_reader_thr(void* arg0)
+{
+    chan_mvar* arg = (chan_mvar*)arg0;
+    return chan_read(arg);
 }
 
 static int N = 10000;
@@ -36,14 +49,17 @@ static int N = 10000;
 // different order of thread creation: spawn readers first, spawn writers
 // first, spawn in mixed order.
 
-// TODO: duplicated code
+typedef void*(*mk_chan)();
+typedef void*(*reader_thr)(void*);
+typedef void*(*writer_thr)(void*);
+typedef void(*free_chan)(void*);
 
-void mvar_test_writers_first()
+void mvar_test_writers_first(mk_chan mk_chan, free_chan free_chan, reader_thr reader_thr, writer_thr writer_thr)
 {
     pthread_t* writers = malloc(sizeof(pthread_t) * N);
     pthread_t* readers = malloc(sizeof(pthread_t) * N);
 
-    mvar* m = mvar_new();
+    void* m = mk_chan();
 
     writer_arg* args = malloc(sizeof(writer_arg) * N);
     for (int i = 0; i < N; ++i)
@@ -105,17 +121,17 @@ void mvar_test_writers_first()
 
     free(writers);
     free(readers);
-    mvar_free(m);
+    free_chan(m);
     free(args);
     free(return_vals);
 }
 
-void mvar_test_readers_first()
+void mvar_test_readers_first(mk_chan mk_chan, free_chan free_chan, reader_thr reader_thr, writer_thr writer_thr)
 {
     pthread_t* writers = malloc(sizeof(pthread_t) * N);
     pthread_t* readers = malloc(sizeof(pthread_t) * N);
 
-    mvar* m = mvar_new();
+    void* m = mk_chan();
 
     writer_arg* args = malloc(sizeof(writer_arg) * N);
     for (int i = 0; i < N; ++i)
@@ -177,17 +193,17 @@ void mvar_test_readers_first()
 
     free(writers);
     free(readers);
-    mvar_free(m);
+    free_chan(m);
     free(args);
     free(return_vals);
 }
 
-void mvar_test_mixed_order()
+void mvar_test_mixed_order(mk_chan mk_chan, free_chan free_chan, reader_thr reader_thr, writer_thr writer_thr)
 {
     pthread_t* writers = malloc(sizeof(pthread_t) * N);
     pthread_t* readers = malloc(sizeof(pthread_t) * N);
 
-    mvar* m = mvar_new();
+    void* m = mk_chan();
 
     writer_arg* args = malloc(sizeof(writer_arg) * N);
     for (int i = 0; i < N; ++i)
@@ -255,7 +271,7 @@ void mvar_test_mixed_order()
 
     free(writers);
     free(readers);
-    mvar_free(m);
+    free_chan(m);
     free(args);
     free(return_vals);
 }
@@ -271,24 +287,17 @@ int main(int argc, char** argv)
     else if (argc != 1)
         printf("Can't parse cmd args, running with N = %d\n", N);
 
-    mvar_test_writers_first();
-    mvar_test_readers_first();
-    mvar_test_mixed_order();
+    // TODO: Test FIFO property
 
-    chan_mvar* chan = chan_mvar_new();
-    chan_write(chan, (void*)(ptrdiff_t)123);
-    chan_write(chan, (void*)(ptrdiff_t)456);
-    chan_write(chan, (void*)(ptrdiff_t)789);
+    printf("Testing mvars...\n");
+    mvar_test_writers_first((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr);
+    mvar_test_readers_first((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr);
+    mvar_test_mixed_order((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr);
 
-    void* ret = chan_read(chan);
-    printf("%d\n", (int)(ptrdiff_t)ret);
+    printf("Testing channels...\n");
+    mvar_test_writers_first((mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr);
+    mvar_test_readers_first((mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr);
+    mvar_test_mixed_order((mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr);
 
-    ret = chan_read(chan);
-    printf("%d\n", (int)(ptrdiff_t)ret);
-
-    ret = chan_read(chan);
-    printf("%d\n", (int)(ptrdiff_t)ret);
-
-    chan_mvar_free(chan);
     return 0;
 }
