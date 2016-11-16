@@ -1,6 +1,5 @@
 #include <assert.h>
 #include <pthread.h>
-#include <semaphore.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -9,11 +8,78 @@
 
 #include "mvar.h"
 
-// TODO: Use semaphore instead of eventfd
+#ifdef USE_EVENTFD
+
+#include <errno.h>
+#include <string.h>
+#include <sys/eventfd.h>
+
+typedef int sem_ref_ty;
+typedef int sem_ty;
+
+static inline
+sem_ty sem_new()
+{
+    sem_ty ret = eventfd(0, EFD_SEMAPHORE);
+    if (ret == -1)
+    {
+        fprintf(stderr, "eventfd() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+    return ret;
+}
+
+static inline
+void sem_free(sem_ref_ty sem)
+{
+    close(sem);
+}
+
+#define SEM_TO_REF(x) (x)
+
+static inline
+void sem_wait(sem_ref_ty sem)
+{
+    uint8_t read_buf[8];
+    read(sem, read_buf, 8);
+}
+
+static uint8_t ONE_LE[8] = { 1, 0, 0, 0, 0, 0, 0, 0 };
+
+static inline
+void sem_post(sem_ref_ty sem)
+{
+    write(sem, ONE_LE, 8);
+}
+
+#else
+
+#include <semaphore.h>
+
+typedef sem_t* sem_ref_ty;
+typedef sem_t  sem_ty;
+
+static inline
+sem_ty sem_new()
+{
+    sem_ty ret;
+    sem_init(&ret, 0 /* not shared between procs */, 0 /* value */);
+    return ret;
+}
+
+static inline
+void sem_free(sem_ref_ty sem)
+{
+    sem_destroy(sem);
+}
+
+#define SEM_TO_REF(x) &(x)
+
+#endif
 
 typedef struct list_node_
 {
-    sem_t*              sem;
+    sem_ref_ty          sem;
     struct list_node_*  next;
     struct list_node_*  prev;
 } list_node;
@@ -44,30 +110,7 @@ static void list_free(list* l)
     free(l);
 }
 
-/*
-static void list_push_front(list* l, int i)
-{
-    list_node* node = malloc(sizeof(list_node));
-    node->i    = i;
-    node->prev = NULL;
-
-    if (!l->head)
-    {
-        assert(!l->tail);
-        l->head = node;
-        l->tail = node;
-        l->head->next = NULL;
-    }
-    else
-    {
-        assert(l->tail);
-        node->next = l->head;
-        l->head = node;
-    }
-}
-*/
-
-static void list_push_back(list* l, sem_t* sem)
+static void list_push_back(list* l, sem_ref_ty sem)
 {
     list_node* node = malloc(sizeof(list_node));
     node->sem  = sem;
@@ -89,10 +132,10 @@ static void list_push_back(list* l, sem_t* sem)
     }
 }
 
-static sem_t* list_pop_front(list* l)
+static sem_ref_ty list_pop_front(list* l)
 {
     assert(l->head);
-    sem_t* ret = l->head->sem;
+    sem_ref_ty ret = l->head->sem;
 
     if (l->head == l->tail)
     {
@@ -158,20 +201,19 @@ void mvar_put(mvar* mvar, void* value)
     if (!list_is_empty(mvar->write_list) || !mvar->is_empty)
     {
         // add self to the queue ...
-        sem_t self;
-        sem_init(&self, 0 /* not shared between procs */, 0 /* value */);
-        list_push_back(mvar->write_list, &self);
+        sem_ty self = sem_new();
+        list_push_back(mvar->write_list, SEM_TO_REF(self));
 
         // ... and sleep
         pthread_mutex_unlock(&mvar->lock);
-        sem_wait(&self);
+        sem_wait(SEM_TO_REF(self));
 
         // it's our turn now, remove self from the list
         pthread_mutex_lock(&mvar->lock);
-        assert(mvar->write_list->head->sem == &self);
+        assert(mvar->write_list->head->sem == SEM_TO_REF(self));
         assert(mvar->is_empty);
         (void)list_pop_front(mvar->write_list);
-        sem_destroy(&self);
+        sem_free(SEM_TO_REF(self));
     }
 
     mvar->value      = value;
@@ -196,16 +238,15 @@ void* mvar_take(mvar* mvar)
     // same as mvar_put, check the queue first
     if (!list_is_empty(mvar->read_list) || mvar->is_empty)
     {
-        sem_t self;
-        sem_init(&self, 0 /* not shared between procs */, 0 /* value */);
-        list_push_back(mvar->read_list, &self);
+        sem_ty self = sem_new();
+        list_push_back(mvar->read_list, SEM_TO_REF(self));
         pthread_mutex_unlock(&mvar->lock);
-        sem_wait(&self);
+        sem_wait(SEM_TO_REF(self));
         pthread_mutex_lock(&mvar->lock);
-        assert(mvar->read_list->head->sem == &self);
+        assert(mvar->read_list->head->sem == SEM_TO_REF(self));
         assert(!mvar->is_empty);
         (void)list_pop_front(mvar->read_list);
-        sem_destroy(&self);
+        sem_free(SEM_TO_REF(self));
     }
 
     mvar->is_empty = true;
