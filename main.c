@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -89,8 +90,13 @@ void** wait_threads(pthread_t* thrs, int n, bool collect_rets)
     return rets;
 }
 
-void mvar_test_writers_first(mk_chan mk_chan, free_chan free_chan, reader_thr reader_thr, writer_thr writer_thr,
-                             bool wait_writers /* wait for writers to return first */)
+void mvar_test_writers_first(
+        mk_chan mk_chan,
+        free_chan free_chan,
+        reader_thr reader_thr,
+        writer_thr writer_thr,
+        bool wait_writers /* wait for writers to return first */
+        )
 {
     pthread_t* writers = malloc(sizeof(pthread_t) * N);
     pthread_t* readers = malloc(sizeof(pthread_t) * N);
@@ -136,7 +142,11 @@ void mvar_test_writers_first(mk_chan mk_chan, free_chan free_chan, reader_thr re
     free(return_vals);
 }
 
-void mvar_test_readers_first(mk_chan mk_chan, free_chan free_chan, reader_thr reader_thr, writer_thr writer_thr)
+void mvar_test_readers_first(
+        mk_chan mk_chan,
+        free_chan free_chan,
+        reader_thr reader_thr,
+        writer_thr writer_thr)
 {
     pthread_t* writers = malloc(sizeof(pthread_t) * N);
     pthread_t* readers = malloc(sizeof(pthread_t) * N);
@@ -178,7 +188,11 @@ void mvar_test_readers_first(mk_chan mk_chan, free_chan free_chan, reader_thr re
     free(return_vals);
 }
 
-void mvar_test_mixed_order(mk_chan mk_chan, free_chan free_chan, reader_thr reader_thr, writer_thr writer_thr)
+void mvar_test_mixed_order(
+        mk_chan mk_chan,
+        free_chan free_chan,
+        reader_thr reader_thr,
+        writer_thr writer_thr)
 {
     pthread_t* writers = malloc(sizeof(pthread_t) * N);
     pthread_t* readers = malloc(sizeof(pthread_t) * N);
@@ -224,6 +238,57 @@ void mvar_test_mixed_order(mk_chan mk_chan, free_chan free_chan, reader_thr read
     free(args);
     free(return_vals);
 }
+////////////////////////////////////////////////////////////////////////////////
+
+#ifdef USE_EVENTFD
+
+int test_poll(struct pollfd* fds, int nfds)
+{
+    int poll_ret = poll(fds, nfds, 0);
+    if (poll_ret < 0)
+    {
+        printf("poll() failed.\n");
+        exit(1);
+    }
+    return poll_ret;
+}
+
+void test_eventfd()
+{
+    mvar* mvar = mvar_new();
+
+    int fd1 = mvar_get_take_eventfd(mvar);
+    int fd2 = mvar_get_take_eventfd(mvar);
+    int fd3 = mvar_get_take_eventfd(mvar);
+
+    struct pollfd fds[3] =
+        { { .fd = fd1, .events = POLLIN },
+          { .fd = fd2, .events = POLLIN },
+          { .fd = fd3, .events = POLLIN } };
+
+    assert(test_poll(fds, 3) == 0);
+
+    mvar_put(mvar, NULL);
+    assert(test_poll(fds, 3) == 1);
+    assert(fds[0].revents & POLLIN);
+
+    void* ret;
+    assert(mvar_take_eventfd(mvar, fd1, &ret) >= 0);
+
+    assert(test_poll(fds + 1, 2) == 0);
+    mvar_put(mvar, NULL);
+    assert(test_poll(fds + 1, 2) == 1);
+    assert(mvar_take_eventfd(mvar, fd2, &ret) >= 0);
+
+    assert(test_poll(fds + 2, 1) == 0);
+    mvar_put(mvar, NULL);
+    assert(test_poll(fds + 2, 1) == 1);
+    assert(mvar_take_eventfd(mvar, fd3, &ret) >= 0);
+
+    mvar_free(mvar);
+}
+
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -236,18 +301,41 @@ int main(int argc, char** argv)
     else if (argc != 1)
         printf("Can't parse cmd args, running with N = %d\n", N);
 
-    // TODO: Test FIFO property
-
     printf("Testing mvars...\n");
-    mvar_test_writers_first((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr, false);
-    mvar_test_readers_first((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr);
-    mvar_test_mixed_order((mk_chan)mvar_new, (free_chan)mvar_free, mvar_reader_thr, mvar_writer_thr);
+    mvar_test_writers_first(
+            (mk_chan)mvar_new,
+            (free_chan)mvar_free,
+            mvar_reader_thr,
+            mvar_writer_thr,
+            false);
+    mvar_test_readers_first(
+            (mk_chan)mvar_new,
+            (free_chan)mvar_free,
+            mvar_reader_thr,
+            mvar_writer_thr);
+    mvar_test_mixed_order(
+            (mk_chan)mvar_new,
+            (free_chan)mvar_free,
+            mvar_reader_thr,
+            mvar_writer_thr);
 
     printf("Testing channels...\n");
     mvar_test_writers_first(
-            (mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr, true);
-    mvar_test_readers_first((mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr);
-    mvar_test_mixed_order((mk_chan)chan_mvar_new, (free_chan)chan_mvar_free, chan_reader_thr, chan_writer_thr);
+            (mk_chan)chan_mvar_new,
+            (free_chan)chan_mvar_free,
+            chan_reader_thr,
+            chan_writer_thr,
+            true);
+    mvar_test_readers_first(
+            (mk_chan)chan_mvar_new,
+            (free_chan)chan_mvar_free,
+            chan_reader_thr,
+            chan_writer_thr);
+    mvar_test_mixed_order(
+            (mk_chan)chan_mvar_new,
+            (free_chan)chan_mvar_free,
+            chan_reader_thr,
+            chan_writer_thr);
 
     printf("Testing mvar FIFO property...\n");
     {
@@ -269,6 +357,11 @@ int main(int argc, char** argv)
         wait_threads(threads, 10, false);
         mvar_free(m);
     }
+
+#ifdef USE_EVENTFD
+    printf("Testing eventfds...\n");
+    test_eventfd();
+#endif
 
     return 0;
 }

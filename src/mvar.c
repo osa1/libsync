@@ -262,3 +262,63 @@ void* mvar_take(mvar* mvar)
     pthread_mutex_unlock(&mvar->lock);
     return value;
 }
+
+#ifdef USE_EVENTFD
+
+int mvar_get_take_eventfd(mvar* mvar)
+{
+    int ret = pthread_mutex_lock(&mvar->lock);
+    assert(ret == 0);
+
+    // Value of the semaphore will be 1 if the mvar is ready to be read by this
+    // thread.
+    bool sem_val = !mvar->is_empty && list_is_empty(mvar->read_list);
+    int fd = eventfd(sem_val, EFD_SEMAPHORE);
+    list_push_back(mvar->read_list, fd);
+
+    pthread_mutex_unlock(&mvar->lock);
+    return fd;
+}
+
+int mvar_take_eventfd(mvar* mvar, int fd, void** ret)
+{
+    int lock_ret = pthread_mutex_lock(&mvar->lock);
+    assert(lock_ret == 0);
+
+    if (mvar->is_empty || list_is_empty(mvar->read_list) || mvar->read_list->head->sem != fd)
+    {
+        pthread_mutex_unlock(&mvar->lock);
+        return -1;
+    }
+
+    (void)list_pop_front(mvar->read_list);
+    close(fd);
+
+    mvar->is_empty = true;
+
+    *ret = mvar->value;
+    pthread_mutex_unlock(&mvar->lock);
+    return 0;
+}
+
+#else
+
+int mvar_get_take_eventfd(mvar* mvar)
+{
+    (void)mvar;
+    fprintf(stderr,
+            "mvar_get_take_eventfd() is only available in eventfd implementation of mvar.\n");
+    exit(1);
+}
+
+int mvar_take_eventfd(mvar* mvar, int fd, void** ret)
+{
+    (void)mvar;
+    (void)fd;
+    (void)ret;
+    fprintf(stderr,
+            "mvar_get_take_eventfd() is only available in eventfd implementation of mvar.\n");
+    exit(1);
+}
+
+#endif

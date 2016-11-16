@@ -13,7 +13,7 @@ main: main.c mvar_sem.o chan_mvar.o
 	gcc -std=c99 $^ -o $@ -Wall -Wextra -g -lpthread
 
 main_eventfd: main.c mvar_eventfd.o chan_mvar.o
-	gcc -std=c99 $^ -o $@ -Wall -Wextra -g -lpthread
+	gcc -std=c99 $^ -o $@ -Wall -Wextra -g -lpthread -DUSE_EVENTFD
 
 .PHONY: clean
 clean:
